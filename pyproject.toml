@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trade-regime"
+version = "0.1.0"
+description = "Regime arbiter: fuse macro/breadth/vol signals into graded conviction with hysteresis, and map conviction to exposure"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "crieck2010" }]
+keywords = ["trading", "regime", "risk-management", "quantitative-finance", "algorithmic-trading"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+trade-regime = "trade_regime.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/crieck2010/trade-regime"
+Repository = "https://github.com/crieck2010/trade-regime"
+
+[tool.setuptools.packages.find]
+where = ["src"]
