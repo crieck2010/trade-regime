@@ -1,21 +1,20 @@
 # trade-regime
 
 The regime **arbiter** for the trade-suite: it fuses the continuous
-scores of the suite's regime *engines* — `trade-macro`, `trade-breadth`,
+reads of the suite's regime *engines* — `trade-macro`, `trade-breadth`,
 `trade-volforecast` — into one graded conviction number (0–100%) with
-hysteresis, and maps conviction to exposure.
+hysteresis.
 
 The engines answer "what is the market doing." The arbiter answers
-"how strongly should we believe it, and how much risk does that
-justify." Per explicit design direction: **graded conviction sizing,
-not more labeled buckets** — buckets cut from noisy signals are false
-precision. Stance labels (`DEFENSIVE`/`NEUTRAL`/`CONSTRUCTIVE`) exist
-for display only; no decision is ever taken on a label.
+"how strongly should we believe it." Per explicit design direction:
+**graded conviction, continuous 0–100% — not labeled buckets.**
+Buckets cut from noisy signals are false precision. The arbiter
+outputs a number; consumers threshold it if they want. There are no
+stance labels anywhere in this package, not even for display.
 
-Part of the [trade-suite](https://github.com/crieck2010/trade-suite)
-algorithmic trading system. It sits in the decision loop between the
-regime engines and the portfolio manager: engines → arbiter →
-`trade-agents` PM → `trade-risk` caps → `trade-hedge` stand-down events.
+It sits in the decision loop between the regime engines and the
+portfolio manager: engines → arbiter → `trade-agents` PM →
+`trade-risk` caps → `trade-hedge` tilt.
 
 ## Install
 
@@ -33,40 +32,47 @@ Requires Python 3.10+. No third-party dependencies — not even NumPy.
 
 ```python
 from trade_regime.arbiter import RegimeArbiter
+from trade_regime.presets import arbiter_kwargs
 from trade_regime.signals import read_all
-from trade_regime.sizing import sleeve_scales
 
 # Plain snapshot dicts from the engines (or your own data):
-signals = read_all(
-    macro_snapshot={"z_score": 1.8, "regime": "EXPANSION"},
-    breadth_snapshot={"regime_score": 0.9, "fragility": 0.2},
-    vol_summary={"current_vol": 0.14, "vol_min": 0.10, "vol_max": 0.45},
+components = read_all(
+    macro_snapshot={"regime": "EXPANSION", "z_score": 1.8},
+    breadth_snapshot={"regime": "BROADENING", "fragility": 0.15},
+    vol_summary={"current_vol": 0.13, "vol_min": 0.10, "vol_max": 0.45,
+                 "forecast_vol": 0.13},
 )
 
-arbiter = RegimeArbiter()          # balanced preset defaults
-state = arbiter.assess(signals)    # -> RegimeState dict, schema_version 1
-print(state["score"], state["conviction"], state["stance_label"])
-print(sleeve_scales(state["conviction"]))
+arbiter = RegimeArbiter(**arbiter_kwargs("balanced"))
+snap = arbiter.assess(components)   # schema_version 1, JSON-serializable
+print(snap["conviction"], snap["hysteresis"]["state"], snap["exposure_scale"])
 ```
 
-Missing engines never break anything — unavailable signals are
-re-weighted out and listed in `state["missing"]`:
+Missing engines never break anything — unavailable components are
+re-weighted out and listed in `snap["missing"]`:
 
 ```python
-from trade_regime.signals import read_all
-state = RegimeArbiter().assess(read_all(None, None, None))
-# score 0.0, conviction 0.0, missing ['breadth', 'macro', 'vol']
+snap = RegimeArbiter(**arbiter_kwargs("balanced")).assess(read_all(None, None, None))
+# composite 50.0 (neutral), conviction 50.0, missing ['breadth', 'macro', 'vol']
+```
+
+Hysteresis memory survives restarts via a tiny state dict (the CLI
+`--state` pattern):
+
+```python
+mem = arbiter.memory_dict()          # {"conviction":..., "persist_count":..., ...}
+fresh = RegimeArbiter(**arbiter_kwargs("balanced"))
+fresh.restore(mem)                   # identical hysteresis behavior
 ```
 
 CLI:
 
 ```bash
-trade-regime demo                        # planted-shift walkthrough
-trade-regime assess --demo               # latest demo day + PM context
-trade-regime assess --live               # from installed engines (fail-soft)
-trade-regime history --transitions-only  # stance changes in the demo
-trade-regime presets                     # conservative / balanced / aggressive
-trade-regime weights --validate macro=0.5,breadth=0.3,vol=0.2
+trade-regime demo                                   # seeded 120-day arc
+trade-regime conviction --macro m.json --breadth b.json --vol v.json
+trade-regime conviction --macro m.json --state state.json --history hist.jsonl
+trade-regime components --demo --day 55             # inspect sub-convictions
+trade-regime presets                                # postures + rationale
 ```
 
 See `examples/regime_example.py` for the full walkthrough.
@@ -74,70 +80,93 @@ See `examples/regime_example.py` for the full walkthrough.
 ## The maths
 
 **What you learn.** How much to trust the market's current regime — as
-a number you can size against, not a label you argue about. The
-arbiter turns three noisy regime reads into one conviction dial and
-one rule for exposure, with memory (hysteresis) so it doesn't flap on
-boundary noise.
+a single number you can reason about, not a label you argue about.
+The arbiter turns three noisy regime reads into one conviction dial
+with memory, so downstream sizing moves continuously with evidence
+instead of lurching on boundary noise.
 
-**Why it matters.** Binary regime labels whipsaw: a z-score of 0.49
-vs 0.51 is the same market wearing two different hats. Sizing on
-labels means your book lurches on noise. Sizing on a graded,
-hysteresis-smoothed conviction means exposure moves continuously with
-evidence — and the hard stand-down rule means "I don't know" maps to
-flat, not to a coin flip.
+**Why it matters.** Daily regime reads are noisy. A raw composite that
+jitters between 68 and 74 means nothing changed, but a sizing layer
+watching the raw number would flap exposure every day. Hysteresis is
+the arbiter's memory: small wobbles are absorbed, sustained drifts
+earn a move, violent breaks act at once. "I don't know" maps to *hold*,
+not to a coin flip — and because there are no buckets, there is no
+boundary to sit on.
 
 **The maths.**
 
-- *Signal normalization.* Each engine snapshot becomes a score in
-  [-1, +1] (risk-off → risk-on):
-  `macro = clamp(z_252 / 3)` — a 3-sigma copper/gold deviation is a
-  full-scale regime read; beyond that the indicator is already
-  screaming. `breadth = clamp(regime_score / 1.5) − 0.5 × fragility`
-  — the fragility drag is the point: a maximally fragile market can
-  never score above +0.5. `vol = 1 − 2 × percentile(current vol)` over
-  the trailing window. Missing z/labels fall back to half-scale
-  regime-label maps (±0.5); missing everything is `SignalUnavailable`.
-- *Weighted fusion.* `score = Σ wᵢ·sᵢ / Σ wᵢ` over *available*
-  signals; unavailable ones are dropped and the remainder
+- *Component transforms (0–100 each, 100 = full risk-on).* Every
+  engine snapshot becomes a sub-conviction through an inspectable
+  formula — no black boxes:
+  - breadth: `clamp(base(regime) − 50·fragility + 10·thrust − 10·divergence)`,
+    with base BROADENING 75 / NEUTRAL 50 / NARROWING 25. Labels are
+    coarse, so they sit at quarter-points — extremes must be *earned*
+    by the continuous adjustments. The fragility drag is asymmetric by
+    design: it only ever pushes toward risk-off.
+  - macro: `clamp(base(regime) + 10·clamp(z/2, −1, 1) ± 5·alerts)`,
+    base EXPANSION 75 / NEUTRAL 50 / CONTRACTION 25. A 2-sigma
+    copper/gold deviation is a strong read; beyond that the indicator
+    is already screaming. Fresh transition alerts nudge ±5.
+  - vol (inverted — high vol is risk-off pressure):
+    `stress = 0.6·pct(current) + 0.4·pct(forecast)` over the trailing
+    window, `+ 0.15` if the forecast exceeds 1.25× current
+    (accelerating into the spike), `+ 0.10` if vol-of-vol > 0.5;
+    `sub = 100·(1 − stress)`. The forecast gets 40% because vol
+    mean-reverts — the forward read tempers the spot read.
+- *Weighted fusion.* `composite = Σ wᵢ·subᵢ / Σ wᵢ` over *available*
+  components; unavailable ones are dropped and the remainder
   renormalized. Default weights macro 0.40 / breadth 0.35 / vol 0.25:
   the slowest, most fundamental read anchors; vol is fastest and
-  noisiest, so it can never flip the arbiter alone. All-missing fuses
-  to 0.0 — no information is neutral, not risk-off; risk-off requires
-  *evidence*.
-- *Conviction.* `conviction = 100 × min(1, |score| / 0.8)`,
-  piecewise-linear and monotone in |score|: every unit of agreement
-  buys the same unit of conviction. Saturates at |score| = 0.8
-  (strong cross-signal agreement).
-- *Hysteresis (Schmitt trigger).* Stance ∈ {−1, 0, +1} flips only
-  across a dead zone: from neutral, engage at |score| ≥ 0.40; release
-  back to neutral at |score| ≤ 0.10. A violent reversal walks *through*
-  neutral over two assessments — it never teleports. The memory of
-  the arbiter is exactly one integer.
-- *Exposure.* `exposure_scale = 0` below conviction 25 (stand-down),
-  else `0.2 + 0.8 × (c − 25)/75` — re-entry after stand-down is
-  tentative by construction. Sleeves die in order: mean-reversion
-  first (dead below 40 — ranges break first), trend tapers linearly
-  (never binary — it keeps its crisis alpha), short-vol last (needs
-  conviction ≥ 65 — pennies, steamroller).
+  noisiest, so it can temper the composite but never flip it alone.
+  All-missing fuses to 50.0 — no information is neutral, not risk-off;
+  risk-off requires *evidence*.
+- *Hysteresis on conviction.* Let `r` be the raw composite and `c`
+  the held conviction (balanced preset):
+  - `|r − c| ≤ 10` → **hold** ("within deadband").
+  - `|r − c| > 20` → **update at once** ("large move beyond confirm
+    band") — a violent break should not wait for confirmation.
+  - in between → **update only after 3 consecutive same-direction
+    observations** beyond the band edge ("persistent move") —
+    stubborn small moves earn trust; a direction flip restarts the
+    count, so alternating noise *never* releases.
+  - every release is **rate-limited to 25 pts** per assessment —
+    conviction walks, it never teleports.
+  The memory of the arbiter is exactly three numbers: the held
+  conviction, the persistence count, and its direction.
+- *Exposure.* `exposure_scale = conviction / 100`, linear and
+  deliberately dumb. The arbiter **suggests**; `trade-risk` owns final
+  sizing. Any floor, curve, or stand-down rule lives downstream.
 
 **Honest limitations.** Garbage in from the engines = garbage
 conviction out; the arbiter cannot fix bad inputs, it can only refuse
-to be confident about them. Weights are judgment, not science — they
-encode a belief about signal speeds, and other beliefs are
-defensible. Hysteresis delays *true* regime changes by design (up to
-the dead-zone width); in a crash, the arbiter is late and says so.
-The stand-down floor (25) is a convention. Demo data is illustrative,
+to move on them. Weights, deadbands, and presets are *policy
+choices*, not discovered constants — other choices are defensible and
+the presets document their bets. Hysteresis delays *true* regime
+changes by design (up to the deadband plus persistence lag); in a
+crash the arbiter is late and says so. Vol-stress lags by
+construction (trailing window + forecast). Breadth/macro inputs are
+daily — intraday conviction will be stale; do not run this on
+minute bars and expect it to keep up. The demo arc is illustrative,
 not backtest evidence.
 
 ## Interop
 
-Stable `schema_version: 1` `RegimeState` contract (see
-`docs/ARCHITECTURE.md`). Lazy adapters for `trade-agents`
-(`pm_context` — the dict the PM reads each cycle), `trade-risk`
-(`risk_caps`), `trade-hedge` (`hedge_trigger`) — no hard
-dependencies; siblings are imported only when called. The full
-supervised/autonomous loop this enables is specified in
-`docs/DECISION_LOOP.md`.
+Stable `schema_version: 1` snapshot contract (see
+`docs/ARCHITECTURE.md`). Lazy, plain-data adapters — no sibling
+imports, ever:
+
+- `market_context_provider(snapshot)` → trade-agents: the canonical
+  fused context. This **supersedes wiring trade-breadth / trade-macro
+  snapshots into the agents individually**; the direct engine paths
+  keep working unchanged.
+- `risk_regime_input(snapshot)` → trade-risk: advisory regime input.
+  `exposure_scale` is explicitly advisory — trade-risk owns sizing.
+- `hedge_tilt_input(snapshot)` → trade-hedge: defensive/aggressive
+  tilt in [−1, +1]; direction and magnitude only, never orders.
+
+Extension slot: `read_all(..., extra={"name": (snapshot, reader)})`
+adds a fourth component without touching the core readers — see
+`docs/METHODOLOGY.md`.
 
 ## Docs
 

@@ -7,53 +7,43 @@ pieces are built yet.
 ## The loop
 
 ```
-each cycle (e.g. 3x daily, or every N minutes intraday):
-  1. engines refresh snapshots (macro, breadth, vol, ...)
-  2. arbiter.assess(signals) -> RegimeState {score, conviction, stance}
-  3. adapters.pm_context(state) -> merged into trade-agents market_context
-  4. PM agent proposes allocations, scaled by sleeve_scales(conviction)
-  5. adapters.risk_caps(state) -> trade-risk validates / tightens
-  6. IF stand_down or defensive flip:
-       adapters.hedge_trigger(state) -> trade-hedge proposes overlays
-  7. orders -> approval queue (supervised) or execution (autonomous)
-  8. fills -> trade-paper ledger; state -> RegimeHistory
+each decision cycle (e.g. 3x daily, before the paper-trading run):
+  1. engines  -> snapshots (trade-macro, trade-breadth, trade-volforecast)
+  2. arbiter  -> conviction 0-100 (hysteresis-smoothed), exposure_scale advisory
+  3. agents   -> market_context_provider(snapshot) merged into PM context;
+                 researchers propose, debate runs, PM decides
+  4. risk     -> risk_regime_input(snapshot) as one advisory voice among
+                 mandate caps, drawdown guards, per-name limits
+  5. hedge    -> hedge_tilt_input(snapshot): defensive/aggressive tilt
+                 suggestion; hedge desk proposes overlays (never executes)
+  6. paper    -> orders flow through the approval queue; user is the gate
 ```
 
-## The mode switch (planned)
+## Conviction's role at each step
 
-One configuration value, `mode: supervised | autonomous`, owned by
-the future orchestration layer (not this repo):
+- **Agents (step 3):** conviction is *context*, not a command.  The PM
+  may threshold it (e.g. "no new ideas below 30") but the number
+  itself carries no buckets — any threshold is the consumer's policy,
+  stated in the consumer's config, not the arbiter's.
+- **Risk (step 4):** `exposure_scale` is advisory.  trade-risk owns
+  final sizing and may override, floor, or ignore it.  The arbiter does
+  not know position-level constraints, liquidity, or mandate limits.
+- **Hedge (step 5):** the tilt is direction + magnitude only.
+  trade-hedge proposes; execution stays behind the user approval gate.
 
-- **supervised** (now): step 7 routes every order through the human
-  approval queue. The human is the decision layer; the arbiter is
-  an advisor.
-- **autonomous** (later): step 7 executes within standing guardrails —
-  daily loss limit, per-position caps, regime stand-down, and the
-  arbiter's sleeve scales as hard multipliers. The human moves to
-  oversight: kill switch + daily digest.
+## Supervised vs autonomous
 
-Designing the switch now matters because the *interfaces* must not
-change later: `pm_context`, `risk_caps`, and `hedge_trigger` are the
-same dicts in both modes. Only the consumer of step 7 changes. This
-repo is written so that transition is a config flip, not a rewrite.
+- **Supervised (now):** every order needs user approval (trade-paper
+  approval queue).  Conviction informs, never authorizes.
+- **Autonomous (future, explicit rule change required):** conviction
+  could gate autonomous sizing bands — but the kill switch (stale
+  data, drawdown breach) must stay outside the arbiter, in trade-hedge
+  / trade-risk, where it cannot be smoothed away by hysteresis.
 
-## Guardrails for autonomous mode (requirements, not implementation)
+## What the arbiter must never do
 
-1. **Daily loss limit** — halt new risk at −X% day; arbiter cannot
-   override.
-2. **Per-position caps** — from `risk_caps`, scaled by conviction.
-3. **Regime stand-down** — conviction < floor → flat; no discretion.
-4. **Kill switch** — human-initiated, phone-accessible, halts the
-   loop in one action.
-5. **Daily digest** — every autonomous session ends with a
-   human-readable summary (stances, transitions, fills, P&L).
-
-## What the arbiter does NOT do
-
-- It does not generate trade ideas (that's trade-agents).
-- It does not set absolute risk limits (that's trade-risk; the
-  arbiter only tightens them by regime).
-- It does not execute or approve anything.
-- Its labels are display-only. Any downstream component found
-  branching on `stance_label` instead of `score`/`conviction` is
-  misusing the contract.
+- Never label the market (no buckets, no stance names).
+- Never set a final position size.
+- Never place, approve, or veto an order.
+- Never be the kill switch — hysteresis is the wrong mechanism for
+  emergencies; emergencies need thresholds, not memory.

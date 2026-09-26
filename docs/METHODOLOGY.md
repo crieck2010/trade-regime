@@ -2,100 +2,158 @@
 
 Every formula in trade-regime, its rationale, and its failure modes.
 
-## 1. Signal normalization (signals.py)
+## 1. Component transforms (signals.py)
 
-| Engine | Primary formula | Fallback |
-|---|---|---|
-| trade-macro | `clamp(z_252 / 3)` | regime label → ±0.5 / 0.0 |
-| trade-breadth | `clamp(regime_score / 1.5) − 0.5 × fragility` | regime label → ±0.5 / 0.0, minus fragility drag |
-| trade-volforecast | `1 − 2 × percentile(current_vol)` | flat history → 0.0 |
+Each engine snapshot becomes a sub-conviction in [0, 100]
+(100 = full risk-on) via a documented, inspectable formula.  Readers
+never raise: bad input becomes `ComponentUnavailable(name, reason)`.
 
-**Why /3 for macro.** The z_252 is a 252-day rolling z-score; |z| = 3
-is a ~3-sigma event. Mapping full-scale at 3 keeps ordinary
-fluctuations (|z| < 1) in the ±0.33 band — present but not decisive —
-while genuine regime extremes saturate. Linear inside, flat outside:
-beyond 3 sigma the indicator carries no *additional* information.
+### 1.1 trade-breadth → breadth
 
-**Why /1.5 for breadth.** The breadth regime_score is itself a
-z-composite with ±0.5 classification thresholds. Full scale at 1.5
-puts the engines' own "official" boundary at one-third of the dial:
-classification-grade evidence, not maximum conviction.
+```
+sub = clamp(base(regime) − 50·fragility + 10·thrust − 10·divergence, 0, 100)
+base: BROADENING 75 / NEUTRAL 50 / NARROWING 25
+```
 
-**Why the fragility drag.** A market can read NEUTRAL on participation
-while concentration risk builds underneath. Subtracting half the
-fragility gauge (∈ [0,1]) guarantees a maximally fragile market
-scores ≤ +0.5. The drag is asymmetric by design — fragility only ever
-pushes toward risk-off.
+- Regime labels are coarse, so they sit at quarter-points.  Extremes
+  must be *earned* by the continuous adjustments below.
+- `fragility` ∈ [0, 1] (clamped): concentration-risk drag, asymmetric
+  by design — it only ever pushes toward risk-off.  A maximally
+  fragile market scores at most 50 before thrust adjustments.
+- `thrusts` truthy (Zweig-style breadth thrust): +10.  Thrusts are
+  rare and powerful; the bonus is capped so one event cannot flip the
+  component alone.
+- `divergence_warning` truthy: −10.
 
-**Why percentile for vol.** Volatility has no natural scale (a 20%
-VIX and a 60% VIX are different worlds); percentile over the trailing
-window is self-calibrating. Linear in percentile — vol is already the
-fastest input, so no extra curvature.
+Failure modes: a stale breadth snapshot (yesterday's fragility)
+silently understates concentration risk.  The arbiter cannot detect
+staleness — feed it fresh snapshots.
 
-**Failure modes.** A stale z-score (engines not refreshed) looks like
-conviction. Warm-up periods (z = None) fall back to half-scale
-labels — weaker by design. Percentile vol needs a full window;
-short histories understate extremes.
+### 1.2 trade-macro → macro
+
+```
+sub = clamp(base(regime) + 10·clamp(z/2, −1, 1) ± 5·alerts, 0, 100)
+base: EXPANSION 75 / NEUTRAL 50 / CONTRACTION 25
+```
+
+- `z_score` (copper/gold 252d z): ±10 points at |z| = 2, linear
+  inside, saturating outside.  A 2-sigma deviation is a strong regime
+  read; beyond that the indicator is already screaming and extra
+  z carries no extra information.
+- `transition_alerts` (list of strings): a fresh CONTRACTION alert
+  −5, a fresh EXPANSION alert +5.  Small on purpose — alerts are
+  discrete events, not continuous evidence.
+
+Failure modes: copper/gold is a *slow* indicator.  In a fast crash the
+macro component is the last to know; that is why it anchors the
+weights rather than leading them.
+
+### 1.3 trade-volforecast → vol
+
+```
+pct     = (current − min) / (max − min)          # trailing window level
+f_pct   = (forecast − min) / (max − min)         # GARCH/HAR forward read
+stress  = 0.6·pct + 0.4·f_pct
+stress += 0.15  if forecast > 1.25·current       # accelerating
+stress += 0.10  if vol_of_vol > 0.5              # unstable vol regime
+sub     = 100·(1 − stress)
+```
+
+- Inverted: high vol is risk-off *pressure*, so the sub-conviction is
+  `1 − stress`.
+- The forecast gets 40% because vol mean-reverts — the forward read
+  tempers the spot read instead of amplifying it.
+- `forecast_vol` is optional: without it, `stress = pct`.
+- Flat history (max == min): percentile undefined → 0.5 (no
+  dispersion, no information → neutral).
+
+Failure modes: vol-stress lags by construction (trailing window +
+forecast).  In a gap-driven crash the vol component reacts a day
+late; the confirm-band path in the hysteresis exists partly for this.
 
 ## 2. Weighted fusion (arbiter.py)
 
-`score = Σ wᵢ·sᵢ / Σ wᵢ` over available signals; missing signals drop
-out and weights renormalize. Default weights:
+```
+composite = Σ wᵢ·subᵢ / Σ wᵢ        over available components only
+```
 
-| Signal | Weight | Rationale |
+- Unavailable components are dropped; remaining weights renormalize.
+  Every missing name is listed in `missing` — silent re-weighting
+  would be a lie.
+- All-missing → 50.0.  No information is neutral, not risk-off;
+  risk-off requires *evidence*.
+- Default weights macro 0.40 / breadth 0.35 / vol 0.25: the slowest,
+  most fundamental read anchors; the fastest, noisiest read can temper
+  but never flip the composite alone.
+
+## 3. Hysteresis on conviction (arbiter.py)
+
+Let `r` be the raw composite, `c` the held conviction (balanced
+preset values; presets change the numbers, not the mechanism):
+
+| condition | action | reason |
 |---|---|---|
-| macro | 0.40 | Slowest, most fundamental; anchors the composite |
-| breadth | 0.35 | Confirms/contradicts what price action claims |
-| vol | 0.25 | Fastest, noisiest; cannot flip the arbiter alone |
+| `\|r − c\| ≤ 10` | hold | within deadband |
+| `\|r − c\| > 20` | update now | large move beyond confirm band |
+| `10 < \|r − c\| ≤ 20`, same direction × 3 obs | update | persistent move beyond band edge |
+| `10 < \|r − c\| ≤ 20`, otherwise | hold | awaiting persistence (k/3) |
 
-All-missing fuses to **0.0** — no information is neutral, not
-risk-off. Risk-off requires evidence; the absence of data must never
-masquerade as a defensive signal (that would stand the book down
-every time a feed hiccups).
+- A direction flip restarts the persistence count: alternating noise
+  around the band edge *never* releases, by construction.
+- Every release is rate-limited: `|Δc| ≤ 25` per assessment.
+  Conviction walks; it never teleports.
+- First assessment: `c = r` ("initialization") — there is no prior to
+  hold.
 
-**Failure mode.** Correlated signals double-count: in a crisis, macro,
-breadth, and vol all scream together, and the weighted mean treats
-them as independent witnesses. The composite saturates (fine), but
-don't mistake "three signals agree" for "three independent reasons."
+Why hysteresis instead of smoothing (e.g. EWMA)?  Smoothing *lags
+everything equally* and still moves on noise, just less.  Hysteresis
+*moves on evidence*: it ignores confirmed noise entirely and reacts
+fully (rate-limited) to confirmed breaks.  For a sizing input, the
+difference between "jittered a little every day" and "did not move
+for a week, then stepped" is the difference between churn and intent.
 
-## 3. Conviction curve
+## 4. Presets (presets.py)
 
-`conviction = 100 × min(1, |score| / 0.8)`. Piecewise-linear,
-monotone in |score|. Saturation at 0.8: reaching ±0.8 needs strong
-cross-signal agreement (e.g. all three at ±0.8), so beyond that the
-arbiter is already maximally convinced.
+| preset | weights (m/b/v) | deadband | confirm | persist | max Δ |
+|---|---|---|---|---|---|
+| balanced | 0.40/0.35/0.25 | ±10 | ±20 | 3 | 25 |
+| conservative | 0.50/0.30/0.20 | ±15 | ±30 | 4 | 15 |
+| aggressive | 0.30/0.40/0.30 | ±7 | ±14 | 2 | 40 |
 
-## 4. Hysteresis (Schmitt trigger)
+- **conservative**: overweights the slowest signal, widest bands,
+  slowest moves.  For live capital.  Price: last to know in a real
+  break.
+- **aggressive**: breadth (fastest *fundamental* read) leads, tight
+  bands.  For research.  Price: whipsaws in chop.
+- All numbers are policy, not science.  The rationale for each is in
+  `presets.py` and printed by `trade-regime presets`.
 
-From neutral: engage at |score| ≥ threshold + band (default 0.40).
-From engaged: release at |score| ≤ threshold − band (default 0.10).
-Violent reversals walk through neutral over two assessments.
+## 5. Exposure scale
 
-**Why.** The dead zone (0.10–0.40) is where measurement noise lives.
-Without hysteresis, a score oscillating 0.38/0.42 flips the stance
-every other day and the book with it. The cost is delay: a true
-regime change is recognized up to the dead-zone width late. In a
-crash, the arbiter is late *and says so* — conviction is visible, so
-downstream can see the hesitation instead of discovering it.
+`exposure_scale = conviction / 100`, linear.  Deliberately dumb: the
+arbiter *suggests*, **trade-risk owns final sizing**.  Floors, curves,
+and stand-down rules belong downstream where position-level
+constraints live.
 
-## 5. Sizing curves (sizing.py)
+## 6. Extension slot: adding a fourth component
 
-- `exposure_scale`: 0 below conviction 25; `0.2 + 0.8(c−25)/75`
-  above. The 0.2 intercept makes re-entry tentative.
-- Sleeve shutdown order: mean-reversion (dead < 40) → trend (linear
-  taper, never binary) → short-vol (dead < 65). The order encodes
-  *causal* fragility: ranges break first, trends persist, short vol
-  is only paid in calm.
-- `STAND_DOWN_FLOOR = 25`: below it, everything is 0. "I don't know"
-  maps to flat.
+1. Write a reader: `def my_reader(snapshot: dict) -> Component |
+   ComponentUnavailable` (any 0–100 transform; document it like §1).
+2. Pass it at read time — no core changes:
+   `read_all(macro, breadth, vol, extra={"sentiment": (snap, my_reader)})`
+3. Give it a weight: `RegimeArbiter(weights={"macro": .35, "breadth": .3,
+   "vol": .2, "sentiment": .15}, preset_name="custom+sentiment")`.
+4. The snapshot's `components` section carries it automatically;
+   adapters forward it untouched.
 
-## 6. Presets
+## 7. Known failure modes (summary)
 
-| Preset | Engage | Release | Floor | Use |
-|---|---|---|---|---|
-| conservative | ±0.45 | ±0.15 | 35 | live capital, field-day autonomy |
-| balanced | ±0.40 | ±0.10 | 25 | default research/paper |
-| aggressive | ±0.30 | ±0.10 | 15 | research, high-conviction books |
-
-Conservative also overweights macro (0.45) — slower signals, fewer
-false alarms.
+- Garbage engine input → garbage conviction.  The arbiter refuses to
+  *move* on bad input; it cannot refuse to *be wrong* about good input
+  that is stale.
+- Hysteresis delays true regime changes (deadband + persistence lag).
+  In a crash, the arbiter is late and says so.
+- Daily inputs → intraday conviction is stale.  Do not run this on
+  minute bars.
+- Weights/bands are judgment.  Validate them against *your* book's
+  turnover and drawdown tolerance before trusting them.

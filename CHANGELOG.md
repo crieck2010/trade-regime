@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.1.1 — 2026-09-26
+
+Redesign to the authoritative arbiter spec (graded conviction, no buckets):
+
+- `signals.py` — components now map to **0–100 sub-convictions**
+  (100 = full risk-on): breadth = regime base − fragility drag ±
+  thrust/divergence; macro = regime base ± z-score ± alert nudges;
+  vol = inverted stress (level + forecast + acceleration + vol-of-vol)
+- `arbiter.py` — **hysteresis on the conviction number itself**:
+  hold within ±10 pts deadband, immediate (rate-limited) release
+  beyond ±20 pts, 3-consecutive-observation persistence for moves in
+  between, 25-pt max change per assessment; memory is 3 numbers with
+  `memory_dict()`/`restore()` round-trip
+- Snapshot contract `schema_version: 1`: timestamp, conviction,
+  per-component sub-convictions + weights, hysteresis state
+  (held/updated + reason), advisory `exposure_scale`, provenance
+- **Removed:** stance labels (`DEFENSIVE`/`NEUTRAL`/`CONSTRUCTIVE`),
+  Schmitt-trigger-on-score, `sizing.py` sleeve curves — the arbiter
+  outputs a number; sizing lives in trade-risk
+- `adapters.py` — renamed to the sibling convention:
+  `market_context_provider` (supersedes individual breadth/macro
+  wiring), `risk_regime_input` (advisory), `hedge_tilt_input`
+  (−1..+1 tilt); zero sibling imports
+- `presets.py` — conservative/balanced/aggressive with documented
+  rationale (weights, deadband, confirm band, persistence, rate limit)
+- `demo.py` — seeded 120-day arc (bull → narrowing/fragile →
+  vol spike → recovery) doubling as regression fixture
+- CLI: `conviction` (snapshot JSON files + `--state` hysteresis
+  memory + `--history` JSONL), `components`, `presets`, `demo`
+- 91 tests, all passing
+
 ## v0.1.0 — 2026-09-24
 
 Initial release: the regime arbiter.

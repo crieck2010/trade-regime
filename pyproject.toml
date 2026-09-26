@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trade-regime"
-version = "0.1.0"
-description = "Regime arbiter: fuse macro/breadth/vol signals into graded conviction with hysteresis, and map conviction to exposure"
+version = "0.1.1"
+description = "Regime arbiter: fuse macro/breadth/vol reads into graded 0-100 conviction with hysteresis"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

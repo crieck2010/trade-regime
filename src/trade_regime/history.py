@@ -1,9 +1,9 @@
-"""Append-only regime history: every assessment, with transition flags.
+"""Append-only conviction history: every snapshot, with update flags.
 
-The arbiter itself is nearly stateless (stance only).  History is the
-durable memory: it lets a restarted process rebuild stance, lets
-researchers study how conviction evolved into a crisis, and gives the
-dashboard something to chart.
+The arbiter itself is nearly stateless (held conviction + persistence
+counter).  History is the durable memory: it lets a restarted process
+review how conviction evolved into a stress event, lets researchers
+study hysteresis behavior, and gives the dashboard something to chart.
 
 In-memory by default; pass ``path=`` for a JSONL log (one JSON object
 per line, appended, never rewritten).
@@ -15,8 +15,8 @@ import json
 import os
 
 
-class RegimeHistory:
-    """Append-only log of RegimeState dicts."""
+class ConvictionHistory:
+    """Append-only log of trade-regime snapshot dicts."""
 
     def __init__(self, path: str | None = None):
         self.path = path
@@ -28,13 +28,13 @@ class RegimeHistory:
                     if line:
                         self.records.append(json.loads(line))
 
-    def record(self, state: dict) -> dict:
-        """Append a RegimeState; return the stored entry.
+    def record(self, snapshot: dict) -> dict:
+        """Append a snapshot; return the stored entry.
 
-        The entry is a copy with ``seq`` (0-based index).  The state's
-        own ``transition`` flag (set by the arbiter) is preserved.
+        The entry is a copy with ``seq`` (0-based index).  The
+        snapshot's own hysteresis ``state``/``reason`` are preserved.
         """
-        entry = dict(state)
+        entry = dict(snapshot)
         entry["seq"] = len(self.records)
         self.records.append(entry)
         if self.path:
@@ -49,19 +49,7 @@ class RegimeHistory:
         """Most recent entry, or None."""
         return self.records[-1] if self.records else None
 
-    def transitions(self) -> list[dict]:
-        """Entries where the stance changed."""
-        return [r for r in self.records if r.get("transition")]
-
-    def stance_at(self, seq: int) -> int | None:
-        """Rebuild stance memory: stance of entry ``seq``."""
-        if 0 <= seq < len(self.records):
-            return self.records[seq]["stance"]
-        return None
-
-    def to_jsonl(self, path: str) -> int:
-        """Dump all records to a JSONL file; returns record count."""
-        with open(path, "w", encoding="utf-8") as fh:
-            for r in self.records:
-                fh.write(json.dumps(r) + "\n")
-        return len(self.records)
+    def updates(self) -> list[dict]:
+        """Entries where hysteresis released (state == 'updated')."""
+        return [r for r in self.records
+                if r.get("hysteresis", {}).get("state") == "updated"]
