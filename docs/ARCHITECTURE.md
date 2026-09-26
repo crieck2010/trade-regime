@@ -85,7 +85,7 @@ three numbers cannot rebuild.
   "provenance": {
     "input_snapshot_ids": {"macro": "...", "breadth": "...", "vol": "..."},
     "input_schema_versions": {"macro": 1, "breadth": 1, "vol": 1},
-    "trade_regime_version": "0.1.1",
+    "trade_regime_version": "0.2.0",
     "preset": "balanced"
   }
 }

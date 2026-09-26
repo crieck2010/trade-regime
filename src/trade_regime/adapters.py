@@ -23,6 +23,24 @@ Hook specs (the contracts downstream code should program against):
   trade-hedge (-1..+1; positive = lean defensive).  trade-hedge owns
   the response (propose overlays, never execute); this only suggests
   direction and magnitude.
+
+All three adapters share a base shape emitted by ``_base()``:
+
+- ``source`` / ``schema_version`` -- provenance, always ``1``
+- ``conviction`` / ``composite_raw`` -- the hysteresis-smoothed and
+  raw 0-100 numbers
+- ``timestamp`` / ``snapshot_id`` / ``missing`` -- snapshot metadata
+- ``hysteresis_state`` -- ``"held"`` or ``"updated"``
+- ``hysteresis_reason`` -- the arbiter's plain-text reason for the
+  hysteresis decision (e.g. ``"within deadband (+/-10 pts)"``);
+  ``None`` when the snapshot carries no hysteresis block
+- ``hysteresis_prior_conviction`` -- the arbiter's conviction before
+  this assessment (``None`` on first assessment); ``None`` when the
+  snapshot carries no hysteresis block
+
+Both hysteresis fields are additive (schema_version stays 1) and
+None-tolerant: downstream code should treat a missing hysteresis
+block as "no hysteresis information", never as an error.
 """
 
 from __future__ import annotations
@@ -39,6 +57,9 @@ def _base(snapshot: dict) -> dict:
         "snapshot_id": snapshot.get("snapshot_id"),
         "missing": list(snapshot.get("missing", [])),
         "hysteresis_state": snapshot.get("hysteresis", {}).get("state"),
+        "hysteresis_reason": snapshot.get("hysteresis", {}).get("reason"),
+        "hysteresis_prior_conviction": snapshot.get("hysteresis", {}).get(
+            "prior_conviction"),
     }
 
 

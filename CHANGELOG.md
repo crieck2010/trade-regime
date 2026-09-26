@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.2.0 — 2026-09-26
+
+Minor, additive, backwards compatible. `schema_version` stays 1.
+
+- `adapters.py` — `_base()` now also emits the arbiter's hysteresis
+  context the consumer (trade-agents) needs: `hysteresis_reason` (the
+  arbiter's plain-text reason, e.g. `"within deadband (+/-10 pts)"`)
+  and `hysteresis_prior_conviction` (conviction before this
+  assessment, `None` on first assessment). Previously only
+  `hysteresis_state` was passed through and the reason was dropped.
+  Both flow into all three adapters (`market_context_provider`,
+  `risk_regime_input`, `hedge_tilt_input`) and are None-tolerant:
+  a snapshot without a `hysteresis` block yields `None` fields,
+  never a `KeyError`. Module docstring hook specs document the
+  base shape.
+- Pinned cross-repo contract for `market_context_provider`:
+  `source`, `schema_version` (1), `conviction`, `composite_raw`,
+  `timestamp`, `snapshot_id`, `missing`, `hysteresis_state`,
+  `hysteresis_reason`, `hysteresis_prior_conviction`,
+  `exposure_scale_advisory`, `components`, `note`.
+- No change to arbiter math, hysteresis logic, or snapshot schema.
+
 ## v0.1.1 — 2026-09-26
 
 Redesign to the authoritative arbiter spec (graded conviction, no buckets):

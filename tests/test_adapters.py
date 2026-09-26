@@ -74,3 +74,41 @@ def test_hedge_tilt_defensive_when_conviction_low():
     snap = arbiter.assess(comps)
     h = hedge_tilt_input(snap)
     assert h["defensive_tilt"] > 0
+
+
+def test_all_adapters_carry_hysteresis_detail(snapshot):
+    """Reason + prior conviction flow into all three adapters."""
+    h = snapshot["hysteresis"]
+    for out in (market_context_provider(snapshot),
+                risk_regime_input(snapshot),
+                hedge_tilt_input(snapshot)):
+        assert out["hysteresis_state"] == h["state"]
+        assert out["hysteresis_reason"] == h["reason"]
+        assert out["hysteresis_prior_conviction"] == h["prior_conviction"]
+        assert isinstance(out["hysteresis_reason"], str)
+        json.dumps(out)
+
+
+def test_hysteresis_fields_none_tolerant_without_hysteresis_block():
+    """Missing hysteresis block -> None fields, never KeyError."""
+    snapshot = {"conviction": 72.5, "composite_raw": 74.1,
+                "timestamp": "2026-09-26T20:00:00+00:00",
+                "snapshot_id": "abc123", "missing": [],
+                "components": {}}
+    for out in (market_context_provider(snapshot),
+                risk_regime_input(snapshot),
+                hedge_tilt_input(snapshot)):
+        assert out["hysteresis_state"] is None
+        assert out["hysteresis_reason"] is None
+        assert out["hysteresis_prior_conviction"] is None
+        json.dumps(out)
+
+
+def test_market_context_provider_pinned_contract_keys(snapshot):
+    """market_context_provider output matches the cross-repo contract."""
+    keys = set(market_context_provider(snapshot))
+    assert keys == {"source", "schema_version", "conviction",
+                    "composite_raw", "timestamp", "snapshot_id", "missing",
+                    "hysteresis_state", "hysteresis_reason",
+                    "hysteresis_prior_conviction",
+                    "exposure_scale_advisory", "components", "note"}

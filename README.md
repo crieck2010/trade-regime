@@ -164,6 +164,16 @@ imports, ever:
 - `hedge_tilt_input(snapshot)` → trade-hedge: defensive/aggressive
   tilt in [−1, +1]; direction and magnitude only, never orders.
 
+All three adapters share a base shape: `source`, `schema_version`
+(1), `conviction`, `composite_raw`, `timestamp`, `snapshot_id`,
+`missing`, `hysteresis_state` (`"held"`/`"updated"`),
+`hysteresis_reason` (arbiter's plain-text reason, e.g.
+`"within deadband (+/-10 pts)"`), and
+`hysteresis_prior_conviction` (conviction before this assessment,
+`None` on first assessment). The hysteresis fields are
+None-tolerant: a snapshot without a `hysteresis` block yields
+`None`, never a `KeyError`.
+
 Extension slot: `read_all(..., extra={"name": (snapshot, reader)})`
 adds a fourth component without touching the core readers — see
 `docs/METHODOLOGY.md`.
