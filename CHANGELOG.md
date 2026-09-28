@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.2.1 — 2026-09-28
+
+Session/time-of-day awareness — the arbiter now knows *when* a read
+was taken, not just what the market-risk reads say:
+
+- `session.py` (new, stdlib only): `session_component` reader +
+  `read_session` / `session_extra` / `session_weights` helpers.
+  Graded 0–100 session-liquidity sub-conviction wired through the
+  documented `extra` extension slot — no core arbiter changes.
+- US equities (`America/New_York`): 09:30–16:00 → 100 (neutral);
+  pre/after-hours grade 30 ↔ 100; deep overnight 21:00–03:00 → 10;
+  weekends + NYSE holidays → 5. Piecewise-linear anchors: continuous,
+  no cliffs at session boundaries.
+- Futures: CME-style proxy curve (cash overlap 100, overnight 70,
+  17:00–18:00 halt ramps to 25, weekends 5). Crypto: 100 always.
+- Fusion weight 0.15, rebalanced pro-rata (macro 0.34 / breadth
+  0.2975 / vol 0.2125 / session 0.15). Max session drag 14.25 pts —
+  below the 20-pt confirm band, so the session input tempers
+  conviction but can never teleport it alone.
+- Timezone-explicit; naive datetimes assumed UTC and flagged loudly
+  in `detail`. Built-in NYSE holiday table covers 2026–2027 only
+  (explicit limitation); `calendar={"holidays": [...]}` injects any
+  calendar. Early closes not modeled (documented).
+- Docs: `docs/SESSION.md`, `docs/INTEROP.md` (new), METHODOLOGY §1.4,
+  README "The maths".
+- trade-agents needs no changes: the drag flows through
+  `conviction → exposure_scale` automatically.
+
 ## v0.2.0 — 2026-09-26
 
 Minor, additive, backwards compatible. `schema_version` stays 1.

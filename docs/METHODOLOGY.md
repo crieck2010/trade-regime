@@ -67,6 +67,37 @@ sub     = 100·(1 − stress)
 - Flat history (max == min): percentile undefined → 0.5 (no
   dispersion, no information → neutral).
 
+### 1.4 session clock → session (new in v0.2.1)
+
+```
+value = piecewise-linear ET anchor curve (asset-class specific)
+```
+
+- US equities (`America/New_York`): 09:30–16:00 → 100 (regular
+  session — neutral, defers to the market-risk components);
+  04:00–09:30 grades 30 → 100 (pre-market); 16:00–20:00 grades
+  100 → 30 (after-hours); 21:00–03:00 → 10 (deep overnight, with
+  one-hour ramps at 20:00–21:00 and 03:00–04:00); weekends and NYSE
+  holidays → 5 (venue closed).
+- Futures (CME-style equity-index proxy): 09:30–16:00 → 100;
+  overnight electronic → 70; 17:00–18:00 daily halt ramps
+  100 → 25 → 70; weekends → 5.
+- Crypto: 100 always (no session concept).
+- Anchors share endpoints, so the curve is continuous — no cliffs at
+  session boundaries (9:29 scores ≈ 99.8, 9:30 scores 100).
+- Naive datetimes are assumed UTC and the assumption is recorded in
+  `detail` (never silent). `calendar={"holidays": [...]}` injects a
+  custom holiday table; the built-in table covers NYSE 2026–2027
+  only (explicit limitation — see `docs/SESSION.md`).
+
+Fusion: `session_weights()` rebalances pro-rata —
+`wᵢ′ = wᵢ·(1 − 0.15)`, `w_session = 0.15`
+(macro 0.34 / breadth 0.2975 / vol 0.2125 / session 0.15).  Max
+session drag is 0.15 × 95 = 14.25 pts < 20-pt confirm band: the
+session component tempers conviction but can never teleport it
+alone; it must persist 3 observations or combine with market-risk
+moves.  A hard session veto belongs downstream, not in the arbiter.
+
 Failure modes: vol-stress lags by construction (trailing window +
 forecast).  In a gap-driven crash the vol component reacts a day
 late; the confirm-band path in the hysteresis exists partly for this.

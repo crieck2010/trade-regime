@@ -120,6 +120,19 @@ boundary to sit on.
   noisiest, so it can temper the composite but never flip it alone.
   All-missing fuses to 50.0 — no information is neutral, not risk-off;
   risk-off requires *evidence*.
+- *Session component (v0.2.1, `trade_regime.session`).* A fourth,
+  graded sub-conviction measuring session liquidity, wired through
+  the `extra` extension slot: `read_all(..., extra=session_extra())`
+  with `RegimeArbiter(weights=session_weights())`. US equities:
+  09:30–16:00 ET → 100 (neutral, defers to market-risk reads),
+  pre/after-hours grade 30 ↔ 100, deep overnight (21:00–03:00) → 10,
+  weekends and NYSE holidays → 5; futures use a CME-style proxy
+  curve; crypto is always 100. Piecewise-linear anchors — continuous,
+  no cliffs at boundaries. Rebalanced pro-rata: macro 0.34 /
+  breadth 0.2975 / vol 0.2125 / session 0.15. Max session drag is
+  14.25 pts (< 20-pt confirm band), so the session input tempers
+  conviction but can never teleport it alone — a hard session veto
+  belongs downstream. See `docs/SESSION.md`.
 - *Hysteresis on conviction.* Let `r` be the raw composite and `c`
   the held conviction (balanced preset):
   - `|r − c| ≤ 10` → **hold** ("within deadband").
@@ -176,12 +189,15 @@ None-tolerant: a snapshot without a `hysteresis` block yields
 
 Extension slot: `read_all(..., extra={"name": (snapshot, reader)})`
 adds a fourth component without touching the core readers — see
-`docs/METHODOLOGY.md`.
+`docs/METHODOLOGY.md`. The session component (`session_extra()`,
+`session_weights()`) is the worked example.
 
 ## Docs
 
 - `docs/ARCHITECTURE.md` — where the arbiter sits, state model, scaling
 - `docs/METHODOLOGY.md` — every formula, preset, and failure mode
+- `docs/SESSION.md` — the session/time-of-day component (v0.2.1)
+- `docs/INTEROP.md` — contracts with trade-agents, trade-risk, trade-hedge
 - `docs/DECISION_LOOP.md` — the supervised/autonomous decision loop
 - `CHANGELOG.md` — release history
 
